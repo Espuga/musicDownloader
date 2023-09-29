@@ -1,26 +1,54 @@
 from PyQt5.QtWidgets import QApplication, QMainWindow, QPushButton, QLabel, QVBoxLayout, QHBoxLayout, QWidget, QFileDialog, QLineEdit, QSizePolicy, QFrame
-from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QPixmap, QIcon
-import os
-import pytube
+from PyQt5.QtCore import Qt, QThread
 from pytube import Playlist
-import requests
-import platform
-import threading
+import sys
 
-class MusicDownloader():
+from functions import get_thumbnail, isPlaylist, download_audio
+
+class NewThread(QThread):
+    def __init__(self, url, path, main_window_instance):
+        super().__init__()
+        self.url = url
+        self.path = path
+        self.main_window_instance = main_window_instance
+    
+    def run(self):
+        self.main_window_instance.mododify("Downloading...", "blue")
+        if isPlaylist(self.url):
+            self.downloadPlaylist(self.url, self.path)
+        else:
+            self.downloaded, self.msg = download_audio(self.url, self.path)
+            if self.downloaded:
+                self.main_window_instance.mododify("Downloaded correctly", "green")
+            else:
+                self.main_window_instance.mododify(self.msg[0], self.msg[1])
+
+    def downloadPlaylist(self, url, path):
+        self.playlist = Playlist(url)
+        self.main_window_instance.mododify("Downloading...", "blue")
+        for video_url in self.playlist.video_urls:
+            # Get thumbnail
+            pixmap = get_thumbnail(video_url)
+            if pixmap is not None:
+                self.main_window_instance.modifyThumbnail(pixmap)
+
+            self.downloaded, self.msg = download_audio(video_url, path)
+            if self.downloaded == False:
+                self.main_window_instance.mododify(self.msg[0], self.msg[1])
+        self.main_window_instance.mododify("Downloaded correctly", "green")
+
+
+class MusicDownloader(QMainWindow):
     def __init__(self):
-        # Create PyQt instance
-        self.app = QApplication([])
+        super().__init__()
 
         # Window creation and configuration
-        self.window = QMainWindow()
-        self.window.setWindowTitle("YouTube music Downloader")
-        self.window.setMinimumSize(800, 450)
+        self.setWindowTitle("YouTube music Downloader")
+        self.setMinimumSize(800, 450)
 
         # Layout
         self.central_widget = QWidget()
-        self.window.setCentralWidget(self.central_widget)
+        self.setCentralWidget(self.central_widget)
 
         self.layout = QVBoxLayout(self.central_widget)
 
@@ -45,6 +73,7 @@ class MusicDownloader():
 
         # Text input readonly
         self.folder_label = QLineEdit("No Folder Selected")
+        self.folder_label.setText("C:/Users/marce/OneDrive/Escriptori")
         self.folder_label.setReadOnly(True)
         self.folder_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         self.layout2.addWidget(self.folder_label, 7)
@@ -79,8 +108,12 @@ class MusicDownloader():
 
         # Button select directory
         self.open_button = QPushButton("Download")
-        self.thread = threading.Thread(target=self.download)
-        self.open_button.clicked.connect(lambda: self.thread.start())
+
+        
+        self.open_button.clicked.connect(self.startDownload)
+
+        #self.thread = threading.Thread(target=self.download)
+        #self.open_button.clicked.connect(lambda: self.thread.start())
         self.open_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         self.layout3.addWidget(self.open_button, 3)
         self.open_button.setStyleSheet(self.format_content)
@@ -125,10 +158,18 @@ class MusicDownloader():
         # Alinear De d'alt a baix
         self.layout.addStretch(1)
         self.url_input.textChanged.connect(lambda: self.display_thumbnail(self.url_input.text()))
-        # Other
-        self.window.show()
-        self.app.exec_()
+        
+    def startDownload(self):
+        # problema, la classe NewThreads no accedeix a les variables de la classe 
+        self.newThread = NewThread(self.url_input.text(), self.folder_label.text(), self)
+        self.newThread.start()
     
+    def mododify(self, msg, color):
+        self.info_label.setText(msg)
+        self.info_label.setStyleSheet(f"color: {color}")
+    def modifyThumbnail(self, pixmap):
+        self.thumbnail_label.setPixmap(pixmap)
+
     def open_directory_dialog(self):
         self.directory = QFileDialog.getExistingDirectory(
             None,
@@ -139,114 +180,15 @@ class MusicDownloader():
         if self.directory:
             self.folder_label.setText(self.directory)
 
-    def get_thumbnail(self, url):
-        try:
-            self.thumbnail_url = pytube.YouTube(url).thumbnail_url
-            self.thumbnail_response = requests.get(self.thumbnail_url)
-            
-            if self.thumbnail_response.status_code == 200:
-                # Cargar la imagen en un QPixmap
-                self.thumbnail_data = self.thumbnail_response.content
-                self.pixmap = QPixmap()
-                self.pixmap.loadFromData(self.thumbnail_data)
-                self.pixmap = self.pixmap.scaled(426, 240)
-                
-                # Mostrar la imagen en un QLabel
-                self.thumbnail_label.setPixmap(self.pixmap)
-            else:
-                print("Error getting the photo")
-        except Exception as e:
-            print(e)
-
     def display_thumbnail(self, url):
-        if self.isPlaylist(url) == False:
-            self.get_thumbnail(url)
-
-    def move(self, fileName, path):
-        self.operating_system = platform.system()
-        if self.operating_system == 'Windows':
-            os.system(f'move \"{fileName}\" {path}')
-            return True
-        elif self.operating_system == 'Linux':
-            os.system(f'mv \"{fileName}\" {path}')
-            return True
-        else:
-            self.info_label.setText(f"Operating System not compatible: {self.operating_system}")
-            self.info_label.setStyleSheet("color: orange")
-            return False
-
-    def download(self):
-        self.url = self.url_input.text()
-        self.info_label.setText("Downloading...")
-        self.info_label.setStyleSheet("color: blue")
-        if self.isPlaylist(self.url):
-            self.downloadPlaylist(self.url)
-        else:
-            self.download_audio()
-    
-    def download_audio(self):
-        self.url = self.url_input.text()
-        self.path = self.folder_label.text()
-        try:
-            self.video = pytube.YouTube(self.url)
-            self.audio_stream = self.video.streams.filter(only_audio=True).first()
-            self.fitxers = os.listdir(self.path)
-            self.mp3_filename = self.audio_stream.default_filename.replace(".mp4", ".mp3")
-            if self.mp3_filename not in self.fitxers:
-                if self.audio_stream is not None:
-                    self.audio_stream.download(filename=self.mp3_filename)
-                    mp3_filepath = os.path.join(self.path, self.mp3_filename)
-                    self.a = self.move(self.mp3_filename, self.path)
-                    if self.a:
-                        self.info_label.setText("Download finished")
-                        self.info_label.setStyleSheet("color: green")
-                else:
-                    self.info_label.setText("Error")
-                    self.info_label.setStyleSheet("color: red")
-            else:
-                self.info_label.setText("Is alredy downloaded")
-                self.info_label.setStyleSheet("color: orange")
-        except Exception as e:
-            print(e)
-
-    def downloadPlaylist(self, url):
-        self.playlist = Playlist(url)
-        self.path = self.folder_label.text()
-        self.info_label.setText("Downloading...")
-        self.info_label.setStyleSheet("color: blue")
-        for video_url in self.playlist.video_urls:
-            self.get_thumbnail(video_url)
-            if self.download_audio_(video_url, self.path) == False:
-                self.info_label.setText("Error downloading playlist")
-                self.info_label.setStyleSheet("color: red")
-        self.info_label.setText("Downloaded correctly")
-        self.info_label.setStyleSheet("color: green")
-
-    def download_audio_(self, video_url, path):
-        try:
-            self.video = pytube.YouTube(video_url)
-            self.audio_stream = self.video.streams.filter(only_audio=True).first()
-            self.fitxers = os.listdir(path)
-            self.mp3_filename = self.audio_stream.default_filename.replace(".mp4", ".mp3")
-            if self.mp3_filename not in self.fitxers:
-                if self.audio_stream is not None:
-                    self.audio_stream.download(filename=self.mp3_filename)
-                    mp3_filepath = os.path.join(path, self.mp3_filename)
-                    self.a = self.move(self.mp3_filename, path)
-                    if self.a:
-                        return True
-                else:
-                    return False
-            else:
-                return False
-        except Exception as e:
-            print(e)
-
-    def isPlaylist(self, url):
-        if "playlist" in url:
-            return True
-        return False
+        if url and isPlaylist(url) == False:
+            pixmap = get_thumbnail(url)
+            if pixmap is not None:
+                self.thumbnail_label.setPixmap(pixmap)
 
 
 if __name__ == '__main__':
-    MusicDownloader()
+    app = QApplication(sys.argv)
+    window = MusicDownloader()
+    window.show()
+    sys.exit(app.exec_())
